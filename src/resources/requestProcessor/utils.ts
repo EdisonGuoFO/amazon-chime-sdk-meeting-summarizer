@@ -59,17 +59,35 @@ interface httpResponse {
 // Functions after refactoring
 
 export const parseAndHandleCreateMeeting = async (
-  event: APIGatewayProxyEvent,
+    event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
     const body = JSON.parse(event.body!);
     const { meetingInfo, formattedDate, localTimeZone } = body;
 
     const input = createInvokeModelInput(createPrompt(meetingInfo));
-    const bedrockResponse = JSON.parse(
-      new TextDecoder().decode((await invokeModel(input)).body),
-    );
-    let { meetingId, meetingType, dialIn } = JSON.parse(bedrockResponse.completion);
+
+    const rawResponse = await invokeModel(input);
+    const responseBody = new TextDecoder().decode(rawResponse.body);
+    console.log('Raw Bedrock Response:', responseBody);
+
+    let bedrockResponse;
+    try {
+      bedrockResponse = JSON.parse(responseBody);
+    } catch (err) {
+      console.error('Failed to parse Bedrock response:', err);
+      return createApiResponse(JSON.stringify('Internal Server Error: Invalid model response'), 500);
+    }
+
+    // Extract JSON from the completion field by removing the <response> tags
+    let { meetingId, meetingType, dialIn } = {};
+    try {
+      const cleanedCompletion = bedrockResponse.completion.replace(/<response>|<\/response>/g, '').trim();
+      ({ meetingId, meetingType, dialIn } = JSON.parse(cleanedCompletion));
+    } catch (err) {
+      console.error('Failed to parse completion JSON:', err);
+      return createApiResponse(JSON.stringify('Internal Server Error: Invalid completion format'), 500);
+    }
 
     if (!meetingId || !meetingType) {
       return createApiResponse(JSON.stringify('Bad request: Missing meetingId or meetingType'), 400);
@@ -105,9 +123,8 @@ export const parseAndHandleCreateMeeting = async (
 
     return createApiResponse(JSON.stringify('Good request'));
 
-
   } catch (err) {
-    console.error(err);
+    console.error('Unexpected error:', err);
     return createApiResponse(JSON.stringify('Internal Server Error'), 500);
   }
 };
@@ -308,7 +325,7 @@ const createPrompt = (meetingInvitation: string): string => {
             - Remove all spaces from the PIN (e.g., #### ## #### -> ##########). 
             - Extract Google the dialIn number
             - Locate the dial-in number following the text "otherwise, to join by phone"
-            - Format the extracted Google dial-in number as (+1 ###-###-####), removing dashes and spaces. For example +1 111-111-1111 would become +11111111111)
+            - Convert the Google dial-in number to a single string with the format “+1##########” by removing all dashes and spaces. For example, convert “+1 111-111-1111” to “+11111111111” (a single string of eleven digits including the plus sign).
 
           3. If Microsoft Teams - Instructions if meeting type is is Microsoft Teams. 
             - Pay attention to these instructions carefully            
